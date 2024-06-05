@@ -1781,7 +1781,7 @@
                 }
             },
             type === ToastType.Error && {
-                duration: -1,
+                duration: 5000,
                 style: {
                     background: 'linear-gradient(-30deg, rgb(108 0 0), rgb(215 0 0))'
                 }
@@ -2385,7 +2385,7 @@
                     `公告: `,
                     ...i18n[language()].notice as RenderCode[]
                 ]),
-                duration: 10000,
+                duration: 3000,
                 gravity: 'bottom',
                 position: 'center'
             }
