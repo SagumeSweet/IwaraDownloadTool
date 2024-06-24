@@ -154,11 +154,6 @@
         return true
     }
 
-    if (!isNull((unsafeWindow.IwaraDownloadTool))) {
-        return
-    }
-    unsafeWindow.IwaraDownloadTool = true
-
     const fetch = (input: RequestInfo, init?: RequestInit, force?: boolean): Promise<Response> => {
         if (init && init.headers && isStringTupleArray(init.headers)) throw new Error("init headers Error")
         if (init && init.method && !(init.method === 'GET' || init.method === 'HEAD' || init.method === 'POST')) throw new Error("init method Error")
@@ -225,8 +220,6 @@
         debugger
     }
 
-    const Channel = new BroadcastChannel('IwaraDownloadTool')
-
     enum DownloadType {
         Aria2,
         IwaraDownloader,
@@ -260,6 +253,8 @@
     }
 
     enum MessageType {
+        Request,
+        Receive,
         Set,
         Del
     }
@@ -269,13 +264,12 @@
         Equal,
         High
     }
-
-    class Version {
-        private major: number;
-        private minor: number;
-        private patch: number;
-        private preRelease: string[];
-        private buildMetadata: string;
+    class Version implements IVersion {
+        major: number;
+        minor: number;
+        patch: number;
+        preRelease: string[];
+        buildMetadata: string;
 
         constructor(versionString: string) {
             const [version, preRelease, buildMetadata] = versionString.split(/[-+]/);
@@ -287,7 +281,7 @@
             this.buildMetadata = buildMetadata;
         }
 
-        compare(other: Version): VersionState {
+        public compare(other: IVersion): VersionState {
             const compareSegment = (a: number | string, b: number | string): VersionState => {
                 if (a < b) {
                     return VersionState.Low;
@@ -321,68 +315,6 @@
             }
 
             return VersionState.Equal;
-        }
-    }
-
-
-    class SyncDictionary<T> {
-        [key: string]: any
-        public id: string
-        private dictionary: Dictionary<T>
-        constructor(id: string, data: Array<{ key: string, value: T }> = []) {
-            this.id = id
-            this.dictionary = new Dictionary<T>(data)
-            GM_getValue(this.id, []).map(i => this.dictionary.set(i.key, i.value))
-            Channel.onmessage = (event: MessageEvent) => {
-                const message = event.data as IChannelMessage<{ key: string, value: T | number | undefined }>
-                if (message.id === this.id) {
-                    switch (message.type) {
-                        case MessageType.Set:
-                            this.dictionary.set(message.data.key, message.data.value as T)
-                            let selectButtonA = unsafeWindow.document.querySelector(`input.selectButton[videoid*="${message.data.key}"i]`) as HTMLInputElement
-                            if (!isNull(selectButtonA)) selectButtonA.checked = true
-                            break
-                        case MessageType.Del:
-                            this.dictionary.del(message.data.key)
-                            let selectButtonB = unsafeWindow.document.querySelector(`input.selectButton[videoid=*"${message.data.key}"i]`) as HTMLInputElement
-                            if (!isNull(selectButtonB)) selectButtonB.checked = false
-                            break
-                        default:
-                            break
-                    }
-                }
-            }
-            Channel.onmessageerror = (event) => {
-                GM_getValue('isDebug') && console.log(`Channel message error: ${getString(event)}`)
-            }
-        }
-        public set(key: string, value: T): void {
-            this.dictionary.set(key, value)
-            Channel.postMessage({ id: this.id, type: MessageType.Set, data: { key: key, value: value } })
-            GM_setValue(this.id, this.dictionary.toArray())
-        }
-        public get(key: string): T | undefined {
-            return this.dictionary.get(key)
-        }
-        public has(key: string): boolean {
-            return this.dictionary.has(key)
-        }
-        public del(key: string): void {
-            this.dictionary.del(key)
-            Channel.postMessage({ id: this.id, type: MessageType.Del, data: { key: key } })
-            GM_setValue(this.id, this.dictionary.toArray())
-        }
-        public get size(): number {
-            return this.dictionary.size
-        }
-        public keys(): string[] {
-            return this.dictionary.keys()
-        }
-        public values(): T[] {
-            return this.dictionary.values()
-        }
-        public toArray(): Array<{ key: string, value: T }> {
-            return this.dictionary.toArray()
         }
     }
     class Dictionary<T> {
@@ -421,6 +353,92 @@
             return this.keys().map(k => { return { key: k, value: this.items[k] } })
         }
     }
+    class SyncDictionary<T> {
+        [key: string]: any
+        private channel: BroadcastChannel
+        private dictionary: Dictionary<T>
+        private changeTime: number
+        private changeCallback: ((event: MessageEvent) => void) | null
+        constructor(id: string, data: Array<{ key: string, value: T }> = [], changeCallback: ((event: MessageEvent) => void) | null) {
+            this.channel = new BroadcastChannel(`${GM_info.script.name}.${id}`)
+            this.changeCallback = changeCallback
+            this.dictionary = new Dictionary<T>(data)
+            this.changeTime = 0
+            if (isNull(GM_getValue(id, { timestamp: 0, value: [] }).timestamp)) 
+                GM_deleteValue(id)
+            unsafeWindow.onbeforeunload = new Proxy(() => {
+                if (this.changeTime > GM_getValue(id, { timestamp: 0, value: [] }).timestamp) GM_setValue(id, { timestamp: this.changeTime, value: this.dictionary.toArray() })
+            }, { set: () => true })
+        let isLastTab = true
+            this.channel.onmessage = (event: MessageEvent) => {
+                const message = event.data as IChannelMessage<{ timestamp: number, value: Array<{ key: string, value: T }> }>
+                const { type, data: { timestamp, value } } = message
+                GM_getValue('isDebug') && console.log(`Channel message: ${getString(message)}`)
+                switch (type) {
+                    case MessageType.Set:
+                        value.forEach(item => this.dictionary.set(item.key, item.value))
+                        break
+                    case MessageType.Del:
+                        value.forEach(item => this.dictionary.del(item.key))
+                        break
+                    case MessageType.Request:
+                        if (this.changeTime === timestamp) return
+                        if (this.changeTime > timestamp) return this.channel.postMessage({ type: MessageType.Receive, data: { timestamp: this.changeTime, value: this.dictionary.toArray() } })
+                        this.dictionary = new Dictionary<T>(value)
+                        break
+                    case MessageType.Receive:
+                        isLastTab = false
+                        if (this.changeTime >= timestamp) return
+                        this.dictionary = new Dictionary<T>(value)
+                        break
+                }
+                this.changeTime = timestamp
+                this.changeCallback?.(event)
+            }
+            this.channel.onmessageerror = (event) => {
+                GM_getValue('isDebug') && console.log(`Channel message error: ${getString(event)}`)
+            }
+            this.channel.postMessage({ type: MessageType.Request, data: { timestamp: this.changeTime, value: this.dictionary.toArray() } })
+            setTimeout(() => {
+                if (isLastTab) {
+                    let save = GM_getValue(id, { timestamp: 0, value: [] })
+                    if (save.timestamp > this.changeTime) {
+                        this.changeTime = save.timestamp
+                        this.dictionary = new Dictionary<T>(save.value)
+                    }
+                }
+            }, 100)
+        }
+        public set(key: string, value: T): void {
+            this.dictionary.set(key, value)
+            this.changeTime = Date.now()
+            this.channel.postMessage({ type: MessageType.Set, data: { timestamp: this.changeTime, value: [{ key: key, value: value }] } })
+        }
+        public get(key: string): T | undefined {
+            return this.dictionary.get(key)
+        }
+        public has(key: string): boolean {
+            return this.dictionary.has(key)
+        }
+        public del(key: string): void {
+            this.dictionary.del(key)
+            this.changeTime = Date.now()
+            this.channel.postMessage({ type: MessageType.Del, data: { timestamp: this.changeTime, value: [{ key: key }] } })
+        }
+        public get size(): number {
+            return this.dictionary.size
+        }
+        public keys(): string[] {
+            return this.dictionary.keys()
+        }
+        public values(): T[] {
+            return this.dictionary.values()
+        }
+        public toArray(): Array<{ key: string, value: T }> {
+            return this.dictionary.toArray()
+        }
+    }
+
 
     class I18N {
         [key: string]: { [key: string]: RenderCode | RenderCode[] }
@@ -437,6 +455,7 @@
             iwaraDownloaderToken: 'IwaraDownloader 密钥: ',
             rename: '重命名',
             save: '保存',
+            reset: '重置',
             ok: '确定',
             on: '开启',
             off: '关闭',
@@ -449,6 +468,7 @@
             checkDownloadLink: '第三方网盘下载地址检查',
             checkPriority: '下载画质检查',
             autoInjectCheckbox: '自动注入选择框',
+            autoCopySaveFileName: '自动复制根据规则生成的文件名',
             configurationIncompatible: '检测到不兼容的配置文件，请重新配置！',
             browserDownloadNotEnabled: `未启用下载功能！`,
             browserDownloadNotWhitelisted: `请求的文件扩展名未列入白名单！`,
@@ -511,6 +531,7 @@
             tryReparseDownload: '→ 点击此处重新解析 ←',
             cdnCacheFinded: '→ 进入 MMD Fans 缓存页面 ←',
             openVideoLink: '→ 进入视频页面 ←',
+            copySucceed: '复制成功！',
             pushTaskSucceed: '推送下载任务成功！',
             connectionTest: '连接测试',
             settingsCheck: '配置检查',
@@ -610,6 +631,7 @@
         autoFollow: boolean
         autoLike: boolean
         autoInjectCheckbox: boolean
+        autoCopySaveFileName: boolean
         checkDownloadLink: boolean
         checkPriority: boolean
         downloadPriority: string
@@ -627,6 +649,7 @@
             this.language = language()
             this.autoFollow = false
             this.autoLike = false
+            this.autoCopySaveFileName = false
             this.autoInjectCheckbox = true
             this.checkDownloadLink = true
             this.checkPriority = true
@@ -704,7 +727,6 @@
             }) as HTMLElement
             let save = renderNode({
                 nodeType: 'button',
-                className: 'closeButton',
                 childs: '%#save#%',
                 attributes: {
                     title: i18n[language()].save
@@ -717,6 +739,19 @@
                         }
                         save.disabled = !save.disabled
                     }
+                }
+            }) as HTMLButtonElement
+            let reset = renderNode({
+                nodeType: 'button',
+                childs: '%#reset#%',
+                attributes: {
+                    title: i18n[language()].reset
+                },
+                events: {
+                    click: ()=>{
+                        firstRun()
+                        unsafeWindow.location.reload()
+                    } 
                 }
             }) as HTMLButtonElement
             this.interface = renderNode({
@@ -762,10 +797,18 @@
                             this.switchButton('autoFollow'),
                             this.switchButton('autoLike'),
                             this.switchButton('autoInjectCheckbox'),
+                            this.switchButton('autoCopySaveFileName'),
                             this.switchButton('isDebug', GM_getValue, (name: string, e) => { GM_setValue(name, (e.target as HTMLInputElement).checked) }, false),
                         ]
                     },
-                    save
+                    {
+                        nodeType: 'p',
+                        className:'buttonList',
+                        childs: [
+                            reset,
+                            save
+                        ]
+                    }
                 ]
             }) as HTMLElement
 
@@ -993,9 +1036,13 @@
                             title: this.Title
                         })
                         for (const key in query) {
-                            for (let i of [...new DOMParser().parseFromString(await (await fetch(`https://mmdfans.net/?query=${encodeURIComponent(`${key}:${query[key]}`)}`)).text(), "text/xml").querySelectorAll('.mdui-col > a')]) {
+                            let dom = new DOMParser().parseFromString(await (await fetch(`https://mmdfans.net/?query=${encodeURIComponent(`${key}:${query[key]}`)}`)).text(), "text/html")
+                            for (let i of [...dom.querySelectorAll('.mdui-col > a')]) {
                                 let imgID = (i.querySelector('.mdui-grid-tile > img') as HTMLImageElement)?.src?.toURL()?.pathname?.split('/')?.pop()?.trimTail('.jpg')
-                                await db.caches.put((i as HTMLLinkElement).href, imgID)
+                                await db.caches.put({ 
+                                    ID: imgID,
+                                    href: `https://mmdfans.net${ (i as HTMLLinkElement).getAttribute('href') }`
+                                })
                             }
                         }
                     }
@@ -1011,7 +1058,7 @@
                                         `%#cdnCacheFinded#%`
                                     ], '%#createTask#%'),
                                 onClick() {
-                                    GM_openInTab(cdnCache.pop(), { active: false, insert: true, setParent: true })
+                                    GM_openInTab(cdnCache.pop().href, { active: false, insert: true, setParent: true })
                                     toast.hideToast()
                                 },
                             }
@@ -1115,7 +1162,7 @@
     }
     class Database extends Dexie {
         videos: Dexie.Table<VideoInfo, string>;
-        caches: Dexie.Table<string, string>;
+        caches: Dexie.Table<{ID:string, href:string}, string>;
         constructor() {
             super("VideoDatabase");
             this.version(2).stores({
@@ -1342,6 +1389,11 @@
             overflow-y: auto;
             width: 400px;
         }
+        #pluginConfig .buttonList {
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+        }
         @media (max-width: 640px) {
             #pluginConfig .main {
                 width: 100%;
@@ -1349,6 +1401,7 @@
         }
         #pluginConfig button {
             background-color: blue;
+            margin: 0px 20px 0px 20px;
             padding: 10px 20px;
             color: white;
             font-size: 18px;
@@ -1520,7 +1573,28 @@
     var i18n = new I18N()
     var config = new Config()
     var db = new Database();
-    var selectList = new SyncDictionary<PieceInfo>('selectList')
+    var selectList = new SyncDictionary<PieceInfo>('selectList', [], (event) => {
+        const message = event.data as IChannelMessage<{ timestamp: number, value: Array<{ key: string, value: PieceInfo }> }>
+        const updateButtonState = (videoID: string) => {
+            const selectButton = document.querySelector(`input.selectButton[videoid*="${videoID}"i]`) as HTMLInputElement
+            if (selectButton) selectButton.checked = selectList.has(videoID)
+        }
+        switch (message.type) {
+            case MessageType.Set:
+            case MessageType.Del:
+                updateButtonState(message.data.value[0].key)
+                break;
+            case MessageType.Request:
+            case MessageType.Receive:
+                (document.querySelectorAll('input.selectButton') as NodeListOf<HTMLInputElement>).forEach(button => {
+                    const videoid = button.getAttribute('videoid')
+                    if (videoid) button.checked = selectList.has(videoid)
+                })
+                break
+            default:
+                break
+        }
+    })
     var editConfig = new configEdit(config)
     var pluginMenu = new menu()
 
@@ -1811,17 +1885,37 @@
             })).status !== 201) newToast(ToastType.Warn, { text: `${videoInfo.Title} %#autoLikeFailed#%`, close: true }).showToast()
         }
         if (config.checkDownloadLink && checkIsHaveDownloadLink(videoInfo.Comments)) {
+            let toastBody = toastNode([
+                `${videoInfo.Title}[${videoInfo.ID}] %#findedDownloadLink#%`,
+                { nodeType: 'br' },
+                `%#openVideoLink#%`
+            ], '%#createTask#%')
             let toast = newToast(
                 ToastType.Warn,
                 {
-                    node: toastNode([
-                        `${videoInfo.Title}[${videoInfo.ID}] %#findedDownloadLink#%`,
-                        { nodeType: 'br' },
-                        `%#openVideoLink#%`
-                    ], '%#createTask#%'),
+                    node: toastBody,
+                    close: config.autoCopySaveFileName,
                     onClick() {
                         GM_openInTab(`https://www.iwara.tv/video/${videoInfo.ID}`, { active: false, insert: true, setParent: true })
-                        toast.hideToast()
+                        if (config.autoCopySaveFileName) {
+                            GM_setClipboard(analyzeLocalPath(config.downloadPath.replaceVariable(
+                                {
+                                    NowTime: new Date(),
+                                    UploadTime: videoInfo.UploadTime,
+                                    AUTHOR: videoInfo.Author,
+                                    ID: videoInfo.ID,
+                                    TITLE: videoInfo.Title,
+                                    ALIAS: videoInfo.Alias,
+                                    QUALITY: videoInfo.DownloadQuality
+                                }
+                            ).trim()).filename, "text")
+                            toastBody.appendChild(renderNode({
+                                nodeType: 'p',
+                                childs: '%#copySucceed#%'
+                            }))
+                        } else {
+                            toast.hideToast()
+                        }
                     }
                 }
             )
@@ -2376,7 +2470,7 @@
             }
         })
 
-        newToast(
+        let notice = newToast(
             ToastType.Info,
             {
                 node: toastNode([
@@ -2387,9 +2481,13 @@
                 ]),
                 duration: 5000,
                 gravity: 'bottom',
-                position: 'center'
+                position: 'center',
+                onClick() {
+                    notice.hideToast()
+                }
             }
-        ).showToast()
+        )
+        notice.showToast()
     }
 
     if (new Version(GM_getValue('version', '0.0.0')).compare(new Version('3.2.5')) === VersionState.Low) {
