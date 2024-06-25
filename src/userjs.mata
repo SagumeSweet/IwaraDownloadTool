@@ -12,8 +12,8 @@
 // @copyright         2024, Dawnlc (https://dawnlc.me/)
 // @source            https://github.com/dawn-lc/IwaraDownloadTool
 // @supportURL        https://github.com/dawn-lc/IwaraDownloadTool/issues
-// @updateURL         https://github.com/dawn-lc/IwaraDownloadTool/releases/download/%#release_tag#%/IwaraDownloadTool.mata.js
-// @downloadURL       https://github.com/dawn-lc/IwaraDownloadTool/releases/download/%#release_tag#%/IwaraDownloadTool.user.js
+// @updateURL         https://github.com/SagumeSweet/IwaraDownloadTool/releases/download/%#release_tag#%/IwaraDownloadTool.mata.js
+// @downloadURL       https://github.com/SagumeSweet/IwaraDownloadTool/releases/download/%#release_tag#%/IwaraDownloadTool.user.js
 // @connect           iwara.tv
 // @connect           *.iwara.tv
 // @connect           mmdfans.net
